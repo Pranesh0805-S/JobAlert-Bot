@@ -4,12 +4,15 @@ from typing import Optional
 import spacy
 from fastapi import FastAPI
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 
 app = FastAPI(title="JobAlert NLP Service")
 
-nlp = spacy.load("en_core_web_sm")
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
+# Disable unused spaCy pipeline components to save memory/startup time
+nlp = spacy.load("en_core_web_sm", disable=["lemmatizer", "tagger", "attribute_ruler"])
+
+# fastembed uses ONNX runtime under the hood - far lighter than torch-based sentence-transformers
+embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
 
 class ExtractRequest(BaseModel):
@@ -133,7 +136,8 @@ def extract(request: ExtractRequest):
     application_link = extract_link(text)
     deadline = extract_deadline(text)
 
-    embedding = embedder.encode(text).tolist()
+    # fastembed returns a generator; take the first (only) result
+    embedding = list(embedder.embed([text]))[0].tolist()
 
     return ExtractResponse(
         company=company,
