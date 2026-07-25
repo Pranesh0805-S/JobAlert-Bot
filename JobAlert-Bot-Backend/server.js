@@ -13,6 +13,7 @@ const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
 const APP_SECRET = process.env.META_APP_SECRET;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL; // e.g. https://jobalert-bot-nlp.onrender.com
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
@@ -63,6 +64,40 @@ async function sendWhatsAppMessage(to, text) {
   return data;
 }
 
+async function extractJobPost(text) {
+  const res = await fetch(`${NLP_SERVICE_URL}/extract`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text })
+  });
+  if (!res.ok) {
+    throw new Error(`NLP service returned ${res.status}`);
+  }
+  return res.json();
+}
+
+// Cosine similarity between two equal-length vectors
+function cosineSimilarity(a, b) {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+function formatJobCard(extracted) {
+  const lines = ['📋 *Job Post Extracted*'];
+  if (extracted.company) lines.push(`🏢 Company: ${extracted.company}`);
+  if (extracted.role) lines.push(`💼 Role: ${extracted.role}`);
+  if (extracted.location) lines.push(`📍 Location: ${extracted.location}`);
+  if (extracted.salary) lines.push(`💰 Salary: ${extracted.salary}`);
+  if (extracted.deadline) lines.push(`⏰ Deadline: ${extracted.deadline}`);
+  if (extracted.application_link) lines.push(`🔗 Apply: ${extracted.application_link}`);
+  return lines.join('\n');
+}
+
 app.post('/webhook', async (req, res) => {
   if (!verifySignature(req)) {
     console.log('Signature verification failed');
@@ -106,19 +141,72 @@ app.post('/webhook', async (req, res) => {
         .single();
 
       if (!profile) {
+        // First message from an existing user = their interest input.
+        // We also generate and store an embedding for their interests so we can match later.
+        let interestEmbedding = null;
+        try {
+          const extracted = await extractJobPost(text);
+          interestEmbedding = extracted.embedding;
+        } catch (err) {
+          console.log('Failed to embed interest text:', err.message);
+        }
+
         await supabase.from('interest_profiles').insert({
           user_id: user.id,
-          raw_interests: text
+          raw_interests: text,
+          embedding: interestEmbedding
         });
+
         await sendWhatsAppMessage(
           fromNumber,
           `Got it! I'll match job posts to: "${text}"\n\nNow forward me any job listing message and I'll process it for you.`
         );
       } else {
-        await sendWhatsAppMessage(
-          fromNumber,
-          "Thanks! I've received this job post. (Extraction logic coming soon.)"
-        );
+        // This is a forwarded job post - extract structured data via the NLP service
+        try {
+          const extracted = await extractJobPost(text);
+
+          const { data: jobPost } = await supabase
+            .from('job_posts')
+            .insert({
+              submitted_by: user.id,
+              raw_text: text,
+              company: extracted.company,
+              role: extracted.role,
+              location: extracted.location,
+              salary: extracted.salary,
+              application_link: extracted.application_link,
+              deadline: extracted.deadline,
+              embedding: extracted.embedding
+            })
+            .select()
+            .single();
+
+          let relevanceNote = '';
+          if (profile.embedding && extracted.embedding) {
+            const score = cosineSimilarity(profile.embedding, extracted.embedding);
+            relevanceNote = `\n\n🎯 Relevance to your interests: ${(score * 100).toFixed(0)}%`;
+
+            if (jobPost) {
+              await supabase.from('matches').insert({
+                user_id: user.id,
+                job_post_id: jobPost.id,
+                similarity_score: score
+              });
+            }
+          }
+
+          await sendWhatsAppMessage(
+            fromNumber,
+            formatJobCard(extracted) + relevanceNote
+          );
+        } catch (err) {
+          console.log('Extraction failed:', err.message);
+          await sendWhatsAppMessage(
+            fromNumber,
+            "Sorry, I couldn't process that job post right now. Please try again in a moment."
+          );
+        }
       }
     }
   }
