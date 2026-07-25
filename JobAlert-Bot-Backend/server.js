@@ -13,7 +13,7 @@ const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
 const APP_SECRET = process.env.META_APP_SECRET;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
-const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL; // e.g. https://jobalert-bot-nlp.onrender.com
+const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL;
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
@@ -76,7 +76,6 @@ async function extractJobPost(text) {
   return res.json();
 }
 
-// Cosine similarity between two equal-length vectors
 function cosineSimilarity(a, b) {
   let dot = 0, normA = 0, normB = 0;
   for (let i = 0; i < a.length; i++) {
@@ -141,8 +140,6 @@ app.post('/webhook', async (req, res) => {
         .single();
 
       if (!profile) {
-        // First message from an existing user = their interest input.
-        // We also generate and store an embedding for their interests so we can match later.
         let interestEmbedding = null;
         try {
           const extracted = await extractJobPost(text);
@@ -162,7 +159,6 @@ app.post('/webhook', async (req, res) => {
           `Got it! I'll match job posts to: "${text}"\n\nNow forward me any job listing message and I'll process it for you.`
         );
       } else {
-        // This is a forwarded job post - extract structured data via the NLP service
         try {
           const extracted = await extractJobPost(text);
 
