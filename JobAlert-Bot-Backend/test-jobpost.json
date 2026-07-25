@@ -1,0 +1,33 @@
+{
+  "entry": [
+    {
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "16505551111",
+              "phone_number_id": "123456123"
+            },
+            "contacts": [
+              {
+                "profile": { "name": "test user name" },
+                "wa_id": "916381784556"
+              }
+            ],
+            "messages": [
+              {
+                "id": "ABGGFlA5Fpc",
+                "timestamp": "1504903111",
+                "from": "916381784556",
+                "type": "text",
+                "text": { "body": "Wipro is hiring Project Engineers. Location: Hyderabad, Bangalore. Salary: 3.5 LPA. Eligibility: 2025 batch B.Tech. Apply by 10th August 2026: https://careers.wipro.com/careers-home" }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

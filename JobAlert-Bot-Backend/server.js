@@ -99,9 +99,15 @@ function formatJobCard(extracted) {
 }
 
 app.post('/webhook', async (req, res) => {
-  if (!verifySignature(req)) {
+  const isTestBypass = req.headers['x-test-bypass'] === process.env.TEST_BYPASS_SECRET;
+
+  if (!isTestBypass && !verifySignature(req)) {
     console.log('Signature verification failed');
     return res.sendStatus(401);
+  }
+
+  if (isTestBypass) {
+    console.log('⚠️  Request accepted via TEST BYPASS (not from Meta)');
   }
 
   const entry = req.body.entry?.[0];
