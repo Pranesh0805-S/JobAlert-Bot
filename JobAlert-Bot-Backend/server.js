@@ -11,8 +11,9 @@ app.use(express.json({
 
 const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
 const APP_SECRET = process.env.META_APP_SECRET;
-const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN; // add this next
-const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID; // add this next
+const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
+const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+const TEST_BYPASS_SECRET = process.env.TEST_BYPASS_SECRET; // TEMPORARY - remove after testing
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
@@ -64,9 +65,17 @@ async function sendWhatsAppMessage(to, text) {
 }
 
 app.post('/webhook', async (req, res) => {
-  if (!verifySignature(req)) {
+  // TEMPORARY: allows curl-based testing without a valid Meta signature.
+  // Remove this bypass once testing is complete.
+  const isTestBypass = req.headers['x-test-bypass'] === TEST_BYPASS_SECRET;
+
+  if (!isTestBypass && !verifySignature(req)) {
     console.log('Signature verification failed');
     return res.sendStatus(401);
+  }
+
+  if (isTestBypass) {
+    console.log('⚠️  Request accepted via TEST BYPASS (not from Meta)');
   }
 
   const entry = req.body.entry?.[0];
