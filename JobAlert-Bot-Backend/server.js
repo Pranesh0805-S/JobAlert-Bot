@@ -13,7 +13,6 @@ const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
 const APP_SECRET = process.env.META_APP_SECRET;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
-const TEST_BYPASS_SECRET = process.env.TEST_BYPASS_SECRET; // TEMPORARY - remove after testing
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
@@ -65,17 +64,9 @@ async function sendWhatsAppMessage(to, text) {
 }
 
 app.post('/webhook', async (req, res) => {
-  // TEMPORARY: allows curl-based testing without a valid Meta signature.
-  // Remove this bypass once testing is complete.
-  const isTestBypass = req.headers['x-test-bypass'] === TEST_BYPASS_SECRET;
-
-  if (!isTestBypass && !verifySignature(req)) {
+  if (!verifySignature(req)) {
     console.log('Signature verification failed');
     return res.sendStatus(401);
-  }
-
-  if (isTestBypass) {
-    console.log('⚠️  Request accepted via TEST BYPASS (not from Meta)');
   }
 
   const entry = req.body.entry?.[0];
@@ -89,7 +80,6 @@ app.post('/webhook', async (req, res) => {
 
     console.log('Incoming message:', { from: fromNumber, text });
 
-    // Check if user exists
     let { data: user } = await supabase
       .from('users')
       .select('*')
@@ -97,7 +87,6 @@ app.post('/webhook', async (req, res) => {
       .single();
 
     if (!user) {
-      // New user — create and onboard
       const { data: newUser } = await supabase
         .from('users')
         .insert({ whatsapp_number_hash: numberHash })
@@ -110,7 +99,6 @@ app.post('/webhook', async (req, res) => {
         "Hi! I'm JobAlert Bot 👋\n\nTell me your field of interest (e.g. \"backend development, fintech\") and I'll help match job posts you forward me."
       );
     } else {
-      // Existing user — check if they have an interest profile
       const { data: profile } = await supabase
         .from('interest_profiles')
         .select('*')
@@ -118,7 +106,6 @@ app.post('/webhook', async (req, res) => {
         .single();
 
       if (!profile) {
-        // This message is their interest input
         await supabase.from('interest_profiles').insert({
           user_id: user.id,
           raw_interests: text
@@ -128,7 +115,6 @@ app.post('/webhook', async (req, res) => {
           `Got it! I'll match job posts to: "${text}"\n\nNow forward me any job listing message and I'll process it for you.`
         );
       } else {
-        // Treat as a forwarded job post (NLP extraction comes next phase)
         await sendWhatsAppMessage(
           fromNumber,
           "Thanks! I've received this job post. (Extraction logic coming soon.)"
