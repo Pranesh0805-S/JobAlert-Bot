@@ -97,6 +97,22 @@ function formatJobCard(extracted) {
   return lines.join('\n');
 }
 
+// Checks Postgres (via the match_similar_job_posts function) for a near-duplicate
+// recent post. Returns the matching row if found, or null if this looks new.
+async function findDuplicatePost(embedding) {
+  const { data, error } = await supabase.rpc('match_similar_job_posts', {
+    query_embedding: embedding,
+    similarity_threshold: 0.92,
+    match_count: 1
+  });
+
+  if (error) {
+    console.log('Dedup check failed:', error.message);
+    return null;
+  }
+  return data && data.length > 0 ? data[0] : null;
+}
+
 app.post('/webhook', async (req, res) => {
   if (!verifySignature(req)) {
     console.log('Signature verification failed');
@@ -162,40 +178,53 @@ app.post('/webhook', async (req, res) => {
         try {
           const extracted = await extractJobPost(text);
 
-          const { data: jobPost } = await supabase
-            .from('job_posts')
-            .insert({
-              submitted_by: user.id,
-              raw_text: text,
-              company: extracted.company,
-              role: extracted.role,
-              location: extracted.location,
-              salary: extracted.salary,
-              application_link: extracted.application_link,
-              deadline: extracted.deadline,
-              embedding: extracted.embedding
-            })
-            .select()
-            .single();
+          // Check for a near-duplicate before inserting a new row
+          const duplicate = await findDuplicatePost(extracted.embedding);
 
           let relevanceNote = '';
           if (profile.embedding && extracted.embedding) {
             const score = cosineSimilarity(profile.embedding, extracted.embedding);
             relevanceNote = `\n\n🎯 Relevance to your interests: ${(score * 100).toFixed(0)}%`;
+          }
 
-            if (jobPost) {
+          if (duplicate) {
+            console.log('Duplicate detected:', duplicate);
+            await sendWhatsAppMessage(
+              fromNumber,
+              `👀 This looks like a post you may have already seen (${duplicate.company || 'similar company'} - ${duplicate.role || 'similar role'}).` +
+              formatJobCard(extracted) + relevanceNote
+            );
+          } else {
+            const { data: jobPost } = await supabase
+              .from('job_posts')
+              .insert({
+                submitted_by: user.id,
+                raw_text: text,
+                company: extracted.company,
+                role: extracted.role,
+                location: extracted.location,
+                salary: extracted.salary,
+                application_link: extracted.application_link,
+                deadline: extracted.deadline,
+                embedding: extracted.embedding
+              })
+              .select()
+              .single();
+
+            if (jobPost && profile.embedding && extracted.embedding) {
+              const score = cosineSimilarity(profile.embedding, extracted.embedding);
               await supabase.from('matches').insert({
                 user_id: user.id,
                 job_post_id: jobPost.id,
                 similarity_score: score
               });
             }
-          }
 
-          await sendWhatsAppMessage(
-            fromNumber,
-            formatJobCard(extracted) + relevanceNote
-          );
+            await sendWhatsAppMessage(
+              fromNumber,
+              formatJobCard(extracted) + relevanceNote
+            );
+          }
         } catch (err) {
           console.log('Extraction failed:', err.message);
           await sendWhatsAppMessage(
