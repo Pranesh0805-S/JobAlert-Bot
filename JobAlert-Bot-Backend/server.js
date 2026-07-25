@@ -111,16 +111,15 @@ async function findDuplicatePost(embedding) {
   });
 
   if (error) {
-    console.log('Dedup check failed:', error.message);
+    console.log('Dedup RPC FAILED:', error.message, error.details, error.hint);
     return null;
   }
+  console.log('Dedup check result:', data);
   return data && data.length > 0 ? data[0] : null;
 }
 
 app.post('/webhook', async (req, res) => {
-  const isTestBypass = req.headers['x-test-bypass'] === process.env.TEST_BYPASS_SECRET;
-
-  if (!isTestBypass && !verifySignature(req)) {
+  if (!verifySignature(req)) {
     console.log('Signature verification failed');
     return res.sendStatus(401);
   }
@@ -201,7 +200,7 @@ app.post('/webhook', async (req, res) => {
               formatJobCard(extracted) + relevanceNote
             );
           } else {
-            const { data: jobPost } = await supabase
+            const { data: jobPost, error: insertError } = await supabase
               .from('job_posts')
               .insert({
                 submitted_by: user.id,
@@ -216,6 +215,12 @@ app.post('/webhook', async (req, res) => {
               })
               .select()
               .single();
+
+            if (insertError) {
+              console.log('job_posts insert FAILED:', insertError.message, insertError.details);
+            } else {
+              console.log('job_posts insert succeeded, id:', jobPost?.id);
+            }
 
             if (jobPost && profile.embedding && extracted.embedding) {
               const score = cosineSimilarity(profile.embedding, extracted.embedding);
