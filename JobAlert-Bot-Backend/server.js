@@ -15,6 +15,10 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL;
 
+console.log('Token first 20 chars:', WHATSAPP_TOKEN?.substring(0, 20));
+console.log('Token length:', WHATSAPP_TOKEN?.length);
+console.log('Phone Number ID:', PHONE_NUMBER_ID);
+
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
 app.get('/webhook', (req, res) => {
