@@ -17,6 +17,8 @@ const NLP_SERVICE_URL = process.env.NLP_SERVICE_URL;
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
+const MIN_JOBPOST_LENGTH = 25; // below this, treat as too short to be a real job post
+
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -97,8 +99,12 @@ function formatJobCard(extracted) {
   return lines.join('\n');
 }
 
-// Checks Postgres (via the match_similar_job_posts function) for a near-duplicate
-// recent post. Returns the matching row if found, or null if this looks new.
+// Returns true if the extraction came back essentially empty - meaning the
+// forwarded text almost certainly wasn't a real job post.
+function extractionLooksEmpty(extracted) {
+  return !extracted.company && !extracted.role && !extracted.application_link && !extracted.salary;
+}
+
 async function findDuplicatePost(embedding) {
   const { data, error } = await supabase.rpc('match_similar_job_posts', {
     query_embedding: embedding,
@@ -114,6 +120,95 @@ async function findDuplicatePost(embedding) {
   return data && data.length > 0 ? data[0] : null;
 }
 
+async function updateInterestProfile(userId, text) {
+  let embedding = null;
+  try {
+    const extracted = await extractJobPost(text);
+    embedding = extracted.embedding;
+  } catch (err) {
+    console.log('Failed to embed interest text:', err.message);
+  }
+
+  // upsert-style: delete any existing profile, insert fresh one
+  await supabase.from('interest_profiles').delete().eq('user_id', userId);
+  await supabase.from('interest_profiles').insert({
+    user_id: userId,
+    raw_interests: text,
+    embedding
+  });
+}
+
+async function handleJobPostMessage(user, profile, fromNumber, text) {
+  try {
+    const extracted = await extractJobPost(text);
+
+    if (extractionLooksEmpty(extracted)) {
+      await sendWhatsAppMessage(
+        fromNumber,
+        "Hmm, that doesn't look like a job post I can parse. Forward a message with company/role details, or type \"change interests\" to update what you're looking for."
+      );
+      return;
+    }
+
+    const duplicate = await findDuplicatePost(extracted.embedding);
+
+    let relevanceNote = '';
+    if (profile.embedding && extracted.embedding) {
+      const score = cosineSimilarity(profile.embedding, extracted.embedding);
+      relevanceNote = `\n\n🎯 Relevance to your interests: ${(score * 100).toFixed(0)}%`;
+    }
+
+    if (duplicate) {
+      console.log('Duplicate detected:', duplicate);
+      await sendWhatsAppMessage(
+        fromNumber,
+        `👀 This looks like a post you may have already seen (${duplicate.company || 'similar company'} - ${duplicate.role || 'similar role'}).\n\n` +
+        formatJobCard(extracted) + relevanceNote
+      );
+      return;
+    }
+
+    const { data: jobPost, error: insertError } = await supabase
+      .from('job_posts')
+      .insert({
+        submitted_by: user.id,
+        raw_text: text,
+        company: extracted.company,
+        role: extracted.role,
+        location: extracted.location,
+        salary: extracted.salary,
+        application_link: extracted.application_link,
+        deadline: extracted.deadline,
+        embedding: extracted.embedding
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.log('job_posts insert FAILED:', insertError.message, insertError.details);
+    } else {
+      console.log('job_posts insert succeeded, id:', jobPost?.id);
+    }
+
+    if (jobPost && profile.embedding && extracted.embedding) {
+      const score = cosineSimilarity(profile.embedding, extracted.embedding);
+      await supabase.from('matches').insert({
+        user_id: user.id,
+        job_post_id: jobPost.id,
+        similarity_score: score
+      });
+    }
+
+    await sendWhatsAppMessage(fromNumber, formatJobCard(extracted) + relevanceNote);
+  } catch (err) {
+    console.log('Extraction failed:', err.message);
+    await sendWhatsAppMessage(
+      fromNumber,
+      "Sorry, I couldn't process that job post right now. Please try again in a moment."
+    );
+  }
+}
+
 app.post('/webhook', async (req, res) => {
   if (!verifySignature(req)) {
     console.log('Signature verification failed');
@@ -126,10 +221,26 @@ app.post('/webhook', async (req, res) => {
 
   if (message) {
     const fromNumber = message.from;
-    const text = message.text?.body || '';
     const numberHash = hashPhoneNumber(fromNumber);
 
+    // Handle non-text messages (images, stickers, audio, etc.)
+    if (message.type !== 'text') {
+      console.log('Non-text message received:', message.type);
+      await sendWhatsAppMessage(
+        fromNumber,
+        "I can only read text messages right now. Please forward the job post as text, or copy-paste it here."
+      );
+      return res.sendStatus(200);
+    }
+
+    const text = (message.text?.body || '').trim();
     console.log('Incoming message:', { from: fromNumber, text });
+
+    // Handle empty messages
+    if (!text) {
+      await sendWhatsAppMessage(fromNumber, "I didn't catch any text in that message - try again?");
+      return res.sendStatus(200);
+    }
 
     let { data: user } = await supabase
       .from('users')
@@ -149,98 +260,51 @@ app.post('/webhook', async (req, res) => {
         fromNumber,
         "Hi! I'm JobAlert Bot 👋\n\nTell me your field of interest (e.g. \"backend development, fintech\") and I'll help match job posts you forward me."
       );
-    } else {
-      const { data: profile } = await supabase
-        .from('interest_profiles')
-        .select('*')
-        .eq('user_id', user.id)
-        .single();
-
-      if (!profile) {
-        let interestEmbedding = null;
-        try {
-          const extracted = await extractJobPost(text);
-          interestEmbedding = extracted.embedding;
-        } catch (err) {
-          console.log('Failed to embed interest text:', err.message);
-        }
-
-        await supabase.from('interest_profiles').insert({
-          user_id: user.id,
-          raw_interests: text,
-          embedding: interestEmbedding
-        });
-
-        await sendWhatsAppMessage(
-          fromNumber,
-          `Got it! I'll match job posts to: "${text}"\n\nNow forward me any job listing message and I'll process it for you.`
-        );
-      } else {
-        try {
-          const extracted = await extractJobPost(text);
-
-          // Check for a near-duplicate before inserting a new row
-          const duplicate = await findDuplicatePost(extracted.embedding);
-
-          let relevanceNote = '';
-          if (profile.embedding && extracted.embedding) {
-            const score = cosineSimilarity(profile.embedding, extracted.embedding);
-            relevanceNote = `\n\n🎯 Relevance to your interests: ${(score * 100).toFixed(0)}%`;
-          }
-
-          if (duplicate) {
-            console.log('Duplicate detected:', duplicate);
-            await sendWhatsAppMessage(
-              fromNumber,
-              `👀 This looks like a post you may have already seen (${duplicate.company || 'similar company'} - ${duplicate.role || 'similar role'}).` +
-              formatJobCard(extracted) + relevanceNote
-            );
-          } else {
-            const { data: jobPost, error: insertError } = await supabase
-              .from('job_posts')
-              .insert({
-                submitted_by: user.id,
-                raw_text: text,
-                company: extracted.company,
-                role: extracted.role,
-                location: extracted.location,
-                salary: extracted.salary,
-                application_link: extracted.application_link,
-                deadline: extracted.deadline,
-                embedding: extracted.embedding
-              })
-              .select()
-              .single();
-
-            if (insertError) {
-              console.log('job_posts insert FAILED:', insertError.message, insertError.details);
-            } else {
-              console.log('job_posts insert succeeded, id:', jobPost?.id);
-            }
-
-            if (jobPost && profile.embedding && extracted.embedding) {
-              const score = cosineSimilarity(profile.embedding, extracted.embedding);
-              await supabase.from('matches').insert({
-                user_id: user.id,
-                job_post_id: jobPost.id,
-                similarity_score: score
-              });
-            }
-
-            await sendWhatsAppMessage(
-              fromNumber,
-              formatJobCard(extracted) + relevanceNote
-            );
-          }
-        } catch (err) {
-          console.log('Extraction failed:', err.message);
-          await sendWhatsAppMessage(
-            fromNumber,
-            "Sorry, I couldn't process that job post right now. Please try again in a moment."
-          );
-        }
-      }
+      return res.sendStatus(200);
     }
+
+    const { data: profile } = await supabase
+      .from('interest_profiles')
+      .select('*')
+      .eq('user_id', user.id)
+      .single();
+
+    // "change interests" command - works whether or not a profile exists yet
+    const lowerText = text.toLowerCase();
+    if (lowerText === 'change interests' || lowerText === 'update interests' || lowerText === 'reset interests') {
+      await supabase.from('interest_profiles').delete().eq('user_id', user.id);
+      await sendWhatsAppMessage(
+        fromNumber,
+        "Sure! Tell me your new field of interest (e.g. \"backend development, fintech\")."
+      );
+      return res.sendStatus(200);
+    }
+
+    if (!profile) {
+      // No interest profile yet - this message IS their interest input
+      if (text.length < 3) {
+        await sendWhatsAppMessage(fromNumber, "That's a bit short - tell me a bit more about what kind of roles you're interested in.");
+        return res.sendStatus(200);
+      }
+
+      await updateInterestProfile(user.id, text);
+      await sendWhatsAppMessage(
+        fromNumber,
+        `Got it! I'll match job posts to: "${text}"\n\nNow forward me any job listing message and I'll process it for you.\n\n(You can type "change interests" anytime to update this.)`
+      );
+      return res.sendStatus(200);
+    }
+
+    // Reject obviously-too-short messages before wasting an NLP call
+    if (text.length < MIN_JOBPOST_LENGTH) {
+      await sendWhatsAppMessage(
+        fromNumber,
+        "That looks too short to be a job post. Forward the full message, or type \"change interests\" to update your preferences."
+      );
+      return res.sendStatus(200);
+    }
+
+    await handleJobPostMessage(user, profile, fromNumber, text);
   }
 
   res.sendStatus(200);
