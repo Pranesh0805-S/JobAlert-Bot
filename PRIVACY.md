@@ -46,4 +46,4 @@ We may update this policy as the Bot's functionality evolves. Material changes w
 
 ## 7. Contact
 
-For questions about this policy or to request data deletion, contact: [your email address here]
+For questions about this policy or to request data deletion, contact: pranesh8506s@gmail.com
