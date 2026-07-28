@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: #0b1220;
+  color: #e7ecf7;
+  font-family: 'Inter', sans-serif;
+  overflow-x: hidden;
+}
+
+.font-display {
+  font-family: 'Sora', sans-serif;
+}
+
+.glow-card {
+  background: radial-gradient(120% 120% at 0% 0%, rgba(124,108,246,0.18) 0%, rgba(17,26,46,0.6) 55%);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.grid-fade {
+  background-image:
+    linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse 60% 50% at 50% 0%, black 40%, transparent 100%);
+}
+
+.chat-bubble {
+  animation: floatIn 0.6s ease forwards;
+  opacity: 0;
+}
+.chat-bubble:nth-child(1) { animation-delay: 0.2s; }
+.chat-bubble:nth-child(2) { animation-delay: 0.9s; }
+.chat-bubble:nth-child(3) { animation-delay: 1.6s; }
+.chat-bubble:nth-child(4) { animation-delay: 2.3s; }
+
+@keyframes floatIn {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.tilt-wrap {
+  transform-style: preserve-3d;
+  transition: transform 0.15s ease-out;
+}

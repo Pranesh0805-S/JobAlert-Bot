@@ -118,9 +118,13 @@ uvicorn main:app --reload --port 8000
 
 ## Known limitations
 
-- Extraction accuracy depends on how the source message is formatted; very unstructured text can produce partial results (falls back to spaCy NER, which isn't always precise for company names embedded mid-sentence)
+- Messages containing multiple job listings in one post (a common "digest" style) only extract the first listing; the rest are currently ignored
 - The bot currently supports one interest profile per user (no multi-category matching)
 - Currently limited to Meta's test phone number and pre-verified test recipients, since the app is unpublished (development mode)
+
+## Testing notes
+
+Extraction logic was validated against real forwarded job posts collected from active WhatsApp/Telegram job-alert channels, covering a range of formats: labelled fields, emoji-prefixed labels, and heading-style company mentions ("X is Hiring Freshers!"). This testing surfaced and fixed a regex bug where labelled fields followed by a line break weren't being matched at all, silently falling back to a much less reliable NER-only extraction path. Company, role, and location extraction is now accurate across all tested real-world formats.
 
 ## Future improvements
 
