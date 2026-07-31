@@ -1,5 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
@@ -8,6 +10,20 @@ const app = express();
 app.use(express.json({
   verify: (req, res, buf) => { req.rawBody = buf; }
 }));
+
+// CORS: allow the public web frontend (Vercel) to call /api/* routes.
+// Restrict this to your actual frontend domain once deployed, instead of '*'.
+app.use('/api', cors({ origin: process.env.WEB_FRONTEND_ORIGIN || '*' }));
+
+// Basic abuse protection for the public, unauthenticated web API.
+const publicApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please slow down and try again in a minute.' }
+});
+app.use('/api', publicApiLimiter);
 
 const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
 const APP_SECRET = process.env.META_APP_SECRET;
@@ -308,6 +324,89 @@ app.post('/webhook', async (req, res) => {
   }
 
   res.sendStatus(200);
+});
+
+// ---------- Public web API (no login required) ----------
+// Powers the "Job Finder" page on the landing site. Reuses the same
+// extractJobPost / findDuplicatePost logic as the WhatsApp webhook - no
+// duplicated business logic.
+
+app.get('/api/jobs/search', async (req, res) => {
+  const { company, role, location, limit } = req.query;
+  const safeLimit = Math.min(Number(limit) || 30, 100);
+
+  let query = supabase
+    .from('job_posts')
+    .select('id, company, role, location, salary, application_link, deadline, created_at')
+    .order('created_at', { ascending: false })
+    .limit(safeLimit);
+
+  if (company) query = query.ilike('company', `%${company}%`);
+  if (role) query = query.ilike('role', `%${role}%`);
+  if (location) query = query.ilike('location', `%${location}%`);
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.log('Job search failed:', error.message);
+    return res.status(500).json({ error: 'Search failed, please try again.' });
+  }
+
+  res.json({ results: data, count: data.length });
+});
+
+app.post('/api/extract', async (req, res) => {
+  const text = (req.body?.text || '').trim();
+
+  if (text.length < MIN_JOBPOST_LENGTH) {
+    return res.status(400).json({
+      error: `Please paste the full job post text (at least ${MIN_JOBPOST_LENGTH} characters).`
+    });
+  }
+
+  try {
+    const extracted = await extractJobPost(text);
+
+    if (extractionLooksEmpty(extracted)) {
+      return res.json({
+        status: 'unrecognized',
+        message: "This doesn't look like a job post we can parse. Try pasting the full message."
+      });
+    }
+
+    const duplicate = await findDuplicatePost(extracted.embedding);
+    if (duplicate) {
+      return res.json({ status: 'duplicate', duplicate, extracted });
+    }
+
+    // submitted_by is null here since web users aren't authenticated -
+    // the users table only tracks WhatsApp identities, and this column
+    // is nullable for exactly this case.
+    const { data: jobPost, error: insertError } = await supabase
+      .from('job_posts')
+      .insert({
+        submitted_by: null,
+        raw_text: text,
+        company: extracted.company,
+        role: extracted.role,
+        location: extracted.location,
+        salary: extracted.salary,
+        application_link: extracted.application_link,
+        deadline: extracted.deadline,
+        embedding: extracted.embedding
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.log('Web extract insert FAILED:', insertError.message);
+    }
+
+    res.json({ status: 'new', extracted, id: jobPost?.id || null });
+  } catch (err) {
+    console.log('Web extract failed:', err.message);
+    res.status(502).json({ error: "Couldn't reach the extraction service. Please try again shortly." });
+  }
 });
 
 app.listen(process.env.PORT || 3000, () => {
